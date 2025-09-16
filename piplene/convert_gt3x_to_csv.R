@@ -5,7 +5,7 @@
 # Looks for .gt3x files in ../data (relative to pipeline/) or ./data
 # Converts only new/updated files and saves .csv into the same data/ folder
 # ============================
-
+DATA_DIR="/absolute/path/to/data" Rscript pipeline/convert_gt3x_to_csv.R
 suppressPackageStartupMessages({
   # Prefer user-level library (portable across machines/CI)
   rlib <- Sys.getenv("R_LIBS_USER")

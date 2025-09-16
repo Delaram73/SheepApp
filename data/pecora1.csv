@@ -1,13 +1,3 @@
------------- Data File Created By ActiGraph wGT3X-BT ActiLife v7.2.0 Firmware v1.9.2 date format M/d/yyyy Filter Normal Multiple Incline Limb: Undefined -----------
-Serial Number: MOS2E37240474
-Start Time 16:00:00
-Start Date 6/5/2025
-Epoch Period (hh:mm:ss) 00:00:10
-Download Time 12:33:54
-Download Date 6/9/2025
-Current Memory Address: 0
-Current Battery Voltage: 4.09     Mode = 61
---------------------------------------------------
 Axis1,Axis2,Axis3,Steps,Lux,Inclinometer Off,Inclinometer Standing,Inclinometer Sitting,Inclinometer Lying
 153,134,20,2,465,0,10,0,0
 491,340,311,1,386,0,10,0,0

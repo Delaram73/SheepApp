@@ -1,1 +1,8 @@
 streamlit
+pandas
+numpy
+tensorflow==2.*            # or tensorflow-cpu
+influxdb-client
+pygt3x                     # or actipy (choose one)
+# For automation option B:
+watchdog

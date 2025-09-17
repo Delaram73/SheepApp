@@ -14,12 +14,19 @@ jobs:
       GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
-      - name: Check out repo (with LFS)
+      - name: Check out repo
         uses: actions/checkout@v4
         with:
-          lfs: true           # fetch real LFS content, not pointers
           fetch-depth: 0
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends unzip curl
+
+      # Skip on PRs from forks (no secrets there)
       - name: Download GT3X test data
+        if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.head.repo.fork }}
         run: |
           mkdir -p data
           curl -fL "$GT3X_URL" -o data/Pecora3.gt3x
@@ -28,71 +35,13 @@ jobs:
           GT3X_URL: ${{ secrets.GT3X_URL }}
           GT3X_SHA: ${{ secrets.GT3X_SHA }}
 
-      - name: Verify & pull GT3X via LFS
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "== Git LFS info =="
-          git lfs version || true
-          git lfs env || true
-
-          echo "== List LFS files =="
-          git lfs ls-files -l || true
-
-          echo "== Check data directory =="
-          ls -l data || true
-
-          shopt -s nullglob
-          found=0
-          for f in data/*.gt3x data/*.gt3x.gz; do
-            found=1
-            echo "--- Inspecting $f ---"
-            ls -lh "$f" || true
-            file "$f" || true
-            echo "First bytes:"
-            head -c 100 "$f" | hexdump -C || true
-            echo "Pointer check:"
-            if head -c 200 "$f" | grep -q 'version https://git-lfs.github.com/spec'; then
-              echo "❌ $f is a Git LFS pointer file (not the real binary)."
-              echo "Attempting 'git lfs pull' to fetch real content..."
-              git lfs pull --include="$f" || true
-              # Re-check
-              if head -c 200 "$f" | grep -q 'version https://git-lfs.github.com/spec'; then
-                echo "❌ Still a pointer after 'git lfs pull'."
-                echo "Likely causes:"
-                echo "  • LFS bandwidth/storage quota exceeded for the repo/org"
-                echo "  • Missing access to LFS for this workflow token"
-                echo "  • The file was committed as a pointer but the binary was never uploaded"
-                echo "Fix suggestions:"
-                echo "  • Ensure LFS quota is available"
-                echo "  • Make sure the repo tracks '*.gt3x' in .gitattributes and the real files were pushed"
-                echo "  • If this is from a fork/PR, consider moving test data to a public URL or a release asset"
-                exit 1
-              fi
-              echo "✅ Fetched real content for $f"
-            fi
-
-            # Final sanity: ensure it's a readable zip (gt3x is a zip container)
-            if ! unzip -l "$f" >/dev/null 2>&1; then
-              echo "❌ $f is not a readable zip; the file may be corrupted or incomplete."
-              exit 1
-            fi
-          done
-
-          if [[ "$found" -eq 0 ]]; then
-            echo "ℹ️ No .gt3x files found under ./data"
-          fi
+      - name: List data dir
+        run: ls -l data || true
 
       - name: Set up R
         uses: r-lib/actions/setup-r@v2
         with:
           use-public-rspm: true
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends unzip
 
       - name: Install R packages (CRAN)
         run: |

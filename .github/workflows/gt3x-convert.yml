@@ -17,13 +17,35 @@ jobs:
       GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
-      - name: Check out repo
+      - name: Check out repo (with LFS)
         uses: actions/checkout@v4
+        with:
+          lfs: true         # <-- pulls large files, not just pointer text
+
+      - name: Ensure Git LFS is active & verify data files
+        shell: bash
+        run: |
+          set -euo pipefail
+          git lfs version || true
+          git lfs ls-files || true
+
+          # Sanity check that .gt3x are not LFS pointers
+          shopt -s nullglob
+          for f in data/*.gt3x data/*.gt3x.gz; do
+            echo "Checking $f"
+            if head -c 100 "$f" | grep -q 'version https://git-lfs.github.com/spec'; then
+              echo "❌ $f appears to be a Git LFS pointer. The real content was not fetched."
+              echo "Make sure the file is tracked by LFS in the repo and that checkout used lfs: true (it did)."
+              echo "If this persists, try committing the binary again with 'git lfs track \"*.gt3x\"' and pushing."
+              exit 1
+            fi
+          done
+          echo "✅ .gt3x files look like real binaries."
 
       - name: Set up R
         uses: r-lib/actions/setup-r@v2
         with:
-          use-public-rspm: true  # fast binaries
+          use-public-rspm: true
 
       - name: Install system dependencies
         run: |
@@ -44,36 +66,24 @@ jobs:
           echo "Using $JOBS parallel jobs"
 
           Rscript - <<'RSCRIPT'
-          # ---- inline converter ----
           jobs <- as.integer(Sys.getenv("JOBS", "1")); if (is.na(jobs) || jobs < 1) jobs <- 1
           options(mc.cores = jobs)
-          if (requireNamespace("data.table", quietly = TRUE)) {
-            try(data.table::setDTthreads(jobs), silent = TRUE)
-          }
+          if (requireNamespace("data.table", quietly = TRUE)) try(data.table::setDTthreads(jobs), silent = TRUE)
 
           out_dir <- Sys.getenv("DATA_DIR", unset = "data")
-          in_dir  <- out_dir  # read from ./data by default
+          in_dir  <- out_dir
           if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
 
-          message("Input dir:  ", normalizePath(in_dir,  mustWork = FALSE))
-          message("Output dir: ", normalizePath(out_dir, mustWork = FALSE))
-
           files <- list.files(in_dir, pattern = "\\.gt3x(\\.gz)?$", full.names = TRUE, ignore.case = TRUE)
-          if (length(files) == 0L) {
-            message("No .gt3x files found in ", in_dir)
-            quit(status = 0)
-          }
+          if (length(files) == 0L) { message("No .gt3x files found in ", in_dir); quit(status = 0) }
 
-          # Ensure package is present
-          if (!requireNamespace("read.gt3x", quietly = TRUE)) {
-            install.packages("read.gt3x", repos = "https://cloud.r-project.org")
-          }
+          if (!requireNamespace("read.gt3x", quietly = TRUE)) install.packages("read.gt3x", repos = "https://cloud.r-project.org")
 
           for (f in files) {
             bn <- tools::file_path_sans_ext(basename(f))
-            bn <- sub("\\.gt3x$", "", bn, ignore.case = TRUE)  # clean double ext
+            bn <- sub("\\.gt3x$", "", bn, ignore.case = TRUE)
             out_csv <- file.path(out_dir, paste0(bn, ".csv"))
-            message("Converting: ", f, "  ->  ", out_csv)
+            message("Converting: ", f, " -> ", out_csv)
             dat <- read.gt3x::read.gt3x(f, asDataFrame = TRUE)
             utils::write.csv(dat, out_csv, row.names = FALSE)
           }

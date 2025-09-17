@@ -3,9 +3,10 @@ name: Auto-flatten new data
 on:
   push:
     branches: [ "sheepApp" ]
-    paths:
-      - 'data/**'
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   flatten:
@@ -46,12 +47,17 @@ jobs:
           BEFORE="${{ github.event.before }}"
           AFTER="${{ github.sha }}"
 
+          # Handle first push on a branch (empty before)
           if [[ -z "${BEFORE:-}" || "$BEFORE" =~ ^0+$ ]]; then
-            # New branch / first push: diff from empty tree
-            ADDED=$(git diff --name-status --diff-filter=A --root "$AFTER" | awk '$1=="A"{print $2}')
+            DIFF_RANGE="$AFTER"
+            DIFF_FLAGS="--root"
           else
-            ADDED=$(git diff --name-status --diff-filter=A "$BEFORE" "$AFTER" | awk '$1=="A"{print $2}')
+            DIFF_RANGE="$BEFORE $AFTER"
+            DIFF_FLAGS=""
           fi
+
+          ADDED=$(git diff --name-status --diff-filter=A $DIFF_FLAGS $DIFF_RANGE \
+                  | awk '$1=="A"{print $2}')
 
           # Keep only CSVs under data/, skip already-flattened outputs
           ADDED=$(echo "$ADDED" | grep -E '^data/.*\.(csv|CSV)$' || true)
@@ -60,6 +66,8 @@ jobs:
           echo "added_files<<EOF" >> "$GITHUB_OUTPUT"
           echo "$ADDED" >> "$GITHUB_OUTPUT"
           echo "EOF" >> "$GITHUB_OUTPUT"
+          echo "Will process:"
+          echo "$ADDED"
 
       - name: Run flatten on each new file
         if: ${{ steps.find_added.outputs.added_files != '' }}

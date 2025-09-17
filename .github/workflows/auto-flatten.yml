@@ -2,22 +2,30 @@ name: Auto-flatten new data
 
 on:
   push:
-    # Run when anything in data/ changes
+    branches: [ "sheepApp" ]
     paths:
       - 'data/**'
-  # Avoid re-running on bot's own commits
   workflow_dispatch:
 
 jobs:
   flatten:
     if: ${{ github.actor != 'github-actions[bot]' }}
     runs-on: ubuntu-latest
+    env:
+      SCRIPT_PATH: data/flatten.py
 
     steps:
       - name: Check out
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Verify script path
+        run: |
+          if [ ! -f "$SCRIPT_PATH" ]; then
+            echo "::error::Could not find $SCRIPT_PATH at $(pwd)"; ls -la; exit 1;
+          fi
+          echo "Found $SCRIPT_PATH"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -28,7 +36,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pandas
+          pip install pandas numpy
 
       - name: Find newly added CSV files in data/
         id: find_added
@@ -37,12 +45,16 @@ jobs:
           set -euo pipefail
           BEFORE="${{ github.event.before }}"
           AFTER="${{ github.sha }}"
-          # List files that are ADDED (A) under data/ and end with .csv or .CSV
-          ADDED=$(git diff --name-status --diff-filter=A "$BEFORE" "$AFTER" \
-                  | awk '$1=="A"{print $2}' \
-                  | grep -E '^data/.*\.(csv|CSV)$' || true)
 
-          # Exclude already-flattened outputs to prevent loops
+          if [[ -z "${BEFORE:-}" || "$BEFORE" =~ ^0+$ ]]; then
+            # New branch / first push: diff from empty tree
+            ADDED=$(git diff --name-status --diff-filter=A --root "$AFTER" | awk '$1=="A"{print $2}')
+          else
+            ADDED=$(git diff --name-status --diff-filter=A "$BEFORE" "$AFTER" | awk '$1=="A"{print $2}')
+          fi
+
+          # Keep only CSVs under data/, skip already-flattened outputs
+          ADDED=$(echo "$ADDED" | grep -E '^data/.*\.(csv|CSV)$' || true)
           ADDED=$(echo "$ADDED" | grep -v '__flattened\.csv$' || true)
 
           echo "added_files<<EOF" >> "$GITHUB_OUTPUT"
@@ -58,7 +70,7 @@ jobs:
             [ -z "$f" ] && continue
             out="${f%.*}__flattened.csv"
             echo "Flattening: $f -> $out"
-            python flat.py --input "$f" --output "$out" --chunk-size 30000 --window 30
+            python "$SCRIPT_PATH" --input "$f" --output "$out"
           done <<< "${{ steps.find_added.outputs.added_files }}"
 
       - name: Commit results
@@ -66,7 +78,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Only add the new flattened files
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add data/*__flattened.csv || true

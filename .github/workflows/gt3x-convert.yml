@@ -3,16 +3,10 @@ name: GT3X → CSV Converter
 on:
   push:
     paths:
-      - '**/convert_gt3x_to_csv.R'
-      - 'pipeline/**'
-      - 'scripts/**'
       - 'data/**'
       - '.github/workflows/gt3x-convert.yml'
   pull_request:
     paths:
-      - '**/convert_gt3x_to_csv.R'
-      - 'pipeline/**'
-      - 'scripts/**'
       - 'data/**'
       - '.github/workflows/gt3x-convert.yml'
 
@@ -20,7 +14,6 @@ jobs:
   run:
     runs-on: ubuntu-latest
     env:
-      # gives remotes/devtools a token if anything still installs from GitHub
       GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
@@ -30,63 +23,69 @@ jobs:
       - name: Set up R
         uses: r-lib/actions/setup-r@v2
         with:
-          use-public-rspm: true   # fast binaries on Ubuntu
+          use-public-rspm: true  # fast binaries
 
       - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends unzip
 
-      # Pre-install CRAN deps so your script doesn't try GitHub
       - name: Install R packages (CRAN)
         run: |
-          Rscript -e 'repos <- c(CRAN="https://cloud.r-project.org"); install.packages(c("read.gt3x"), repos = repos, Ncpus = parallel::detectCores())'
+          Rscript -e 'repos <- c(CRAN="https://cloud.r-project.org"); install.packages("read.gt3x", repos = repos, Ncpus = parallel::detectCores())'
 
-      - name: Locate converter script
-        id: find_script
-        shell: bash
-        run: |
-          set -euo pipefail
-          script_path="$(git ls-files | grep -E '(^|/)convert_gt3x_to_csv\.R$' | head -n1 || true)"
-          if [[ -z "${script_path}" ]]; then
-            echo "❌ Could not find convert_gt3x_to_csv.R anywhere in the repo."
-            exit 1
-          fi
-          echo "Found script at: ${script_path}"
-          echo "script=${script_path}" >> "$GITHUB_OUTPUT"
-
-      - name: Run converter
+      - name: Run converter (inline R)
         env:
           DATA_DIR: ${{ github.workspace }}/data
         run: |
           set -euo pipefail
-          mkdir -p data
+          mkdir -p "$DATA_DIR"
           export JOBS="$(nproc || echo 1)"
-          export OMP_NUM_THREADS="$JOBS"
-          export MKL_NUM_THREADS="$JOBS"
-          export OPENBLAS_NUM_THREADS="$JOBS"
           echo "Using $JOBS parallel jobs"
 
-          # Pre-define `jobs` inside R, then source your script
           Rscript - <<'RSCRIPT'
-          jobs <- as.integer(Sys.getenv("JOBS", "1"))
-          if (is.na(jobs) || jobs < 1) jobs <- 1
+          # ---- inline converter ----
+          jobs <- as.integer(Sys.getenv("JOBS", "1")); if (is.na(jobs) || jobs < 1) jobs <- 1
           options(mc.cores = jobs)
           if (requireNamespace("data.table", quietly = TRUE)) {
             try(data.table::setDTthreads(jobs), silent = TRUE)
           }
-          source("${{ steps.find_script.outputs.script }}")
+
+          out_dir <- Sys.getenv("DATA_DIR", unset = "data")
+          in_dir  <- out_dir  # read from ./data by default
+          if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+
+          message("Input dir:  ", normalizePath(in_dir,  mustWork = FALSE))
+          message("Output dir: ", normalizePath(out_dir, mustWork = FALSE))
+
+          files <- list.files(in_dir, pattern = "\\.gt3x(\\.gz)?$", full.names = TRUE, ignore.case = TRUE)
+          if (length(files) == 0L) {
+            message("No .gt3x files found in ", in_dir)
+            quit(status = 0)
+          }
+
+          # Ensure package is present
+          if (!requireNamespace("read.gt3x", quietly = TRUE)) {
+            install.packages("read.gt3x", repos = "https://cloud.r-project.org")
+          }
+
+          for (f in files) {
+            bn <- tools::file_path_sans_ext(basename(f))
+            bn <- sub("\\.gt3x$", "", bn, ignore.case = TRUE)  # clean double ext
+            out_csv <- file.path(out_dir, paste0(bn, ".csv"))
+            message("Converting: ", f, "  ->  ", out_csv)
+            dat <- read.gt3x::read.gt3x(f, asDataFrame = TRUE)
+            utils::write.csv(dat, out_csv, row.names = FALSE)
+          }
           RSCRIPT
 
-          echo "--- data directory listing ---"
-          ls -lh data || true
-
+          echo "--- data directory after conversion ---"
+          ls -lh "$DATA_DIR" || true
 
       - name: Upload converted CSVs (artifact)
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: converted-csvs
-          path: |
-            data/*.csv
+          path: data/*.csv
           if-no-files-found: warn

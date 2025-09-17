@@ -19,6 +19,9 @@ on:
 jobs:
   run:
     runs-on: ubuntu-latest
+    env:
+      # gives remotes/devtools a token if anything still installs from GitHub
+      GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
       - name: Check out repo
@@ -26,12 +29,18 @@ jobs:
 
       - name: Set up R
         uses: r-lib/actions/setup-r@v2
+        with:
+          use-public-rspm: true   # fast binaries on Ubuntu
 
-      # read.gt3x may need unzip and basic build tools
       - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends unzip
+
+      # Pre-install CRAN deps so your script doesn't try GitHub
+      - name: Install R packages (CRAN)
+        run: |
+          Rscript -e 'repos <- c(CRAN="https://cloud.r-project.org"); install.packages(c("read.gt3x"), repos = repos, Ncpus = parallel::detectCores())'
 
       - name: Locate converter script
         id: find_script
@@ -41,7 +50,6 @@ jobs:
           script_path="$(git ls-files | grep -E '(^|/)convert_gt3x_to_csv\.R$' | head -n1 || true)"
           if [[ -z "${script_path}" ]]; then
             echo "❌ Could not find convert_gt3x_to_csv.R anywhere in the repo."
-            echo "Make sure the file is committed and pushed."
             exit 1
           fi
           echo "Found script at: ${script_path}"
@@ -49,8 +57,7 @@ jobs:
 
       - name: Run converter
         env:
-          # optional: override data dir; by default your script finds ./data
-          DATA_DIR: ${{ github.workspace }}/data
+          DATA_DIR: ${{ github.workspace }}/data   # optional override
         run: |
           set -euo pipefail
           echo "Running: Rscript '${{ steps.find_script.outputs.script }}'"

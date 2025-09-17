@@ -24,16 +24,32 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends unzip curl
 
-      # Skip on PRs from forks (no secrets there)
-      - name: Download GT3X test data
+      # Validate & sanitize the URL secret without printing it
+      - name: Validate GT3X_URL secret (no value leak)
         if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.head.repo.fork }}
         run: |
-          mkdir -p data
-          curl -fL "$GT3X_URL" -o data/Pecora3.gt3x
-          echo "$GT3X_SHA  data/Pecora3.gt3x" | sha256sum -c -
+          if [ -z "${GT3X_URL:-}" ]; then
+            echo "❌ GT3X_URL secret is empty or not set."
+            exit 1
+          fi
+          CLEAN_URL="$(printf "%s" "$GT3X_URL" | tr -d '\r\n' | sed 's/^"//; s/"$//; s/^'\''//; s/'\''$//')"
+          case "$CLEAN_URL" in
+            http://*|https://*) ;;
+            *) echo "❌ GT3X_URL must start with http:// or https://"; exit 1 ;;
+          esac
+          echo "CLEAN_URL=$CLEAN_URL" >> "$GITHUB_ENV"
         env:
           GT3X_URL: ${{ secrets.GT3X_URL }}
+
+      # Skip download on PRs from forks (no secrets available)
+      - name: Download GT3X test data
+        if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.head.repo.fork }}
+        env:
           GT3X_SHA: ${{ secrets.GT3X_SHA }}
+        run: |
+          mkdir -p data
+          curl --fail --location --retry 3 --retry-delay 2 "$CLEAN_URL" -o data/Pecora3.gt3x
+          echo "$GT3X_SHA  data/Pecora3.gt3x" | sha256sum -c -
 
       - name: List data dir
         run: ls -l data || true

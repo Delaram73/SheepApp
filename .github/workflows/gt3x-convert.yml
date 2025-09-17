@@ -1,3 +1,12 @@
+name: Convert GT3X to CSV
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
 jobs:
   run:
     runs-on: ubuntu-latest

@@ -2,7 +2,7 @@ name: Auto-flatten new data
 
 on:
   push:
-    branches: [ "sheepApp" ]
+    branches: [ "main" ]
   workflow_dispatch:
 
 permissions:
@@ -23,8 +23,10 @@ jobs:
 
       - name: Verify script path
         run: |
+          echo "Repo at: $(pwd)"
+          ls -la
           if [ ! -f "$SCRIPT_PATH" ]; then
-            echo "::error::Could not find $SCRIPT_PATH at $(pwd)"; ls -la; exit 1;
+            echo "::error::Could not find $SCRIPT_PATH"; exit 1
           fi
           echo "Found $SCRIPT_PATH"
 
@@ -37,7 +39,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pandas numpy
+          pip install pandas numpy || true
 
       - name: Find newly added CSV files in data/
         id: find_added
@@ -47,17 +49,17 @@ jobs:
           BEFORE="${{ github.event.before }}"
           AFTER="${{ github.sha }}"
 
-          # Handle first push on a branch (empty before)
+          # Handle first push on branch (before can be all zeros)
           if [[ -z "${BEFORE:-}" || "$BEFORE" =~ ^0+$ ]]; then
-            DIFF_RANGE="$AFTER"
             DIFF_FLAGS="--root"
+            DIFF_RANGE="$AFTER"
           else
-            DIFF_RANGE="$BEFORE $AFTER"
             DIFF_FLAGS=""
+            DIFF_RANGE="$BEFORE $AFTER"
           fi
 
           ADDED=$(git diff --name-status --diff-filter=A $DIFF_FLAGS $DIFF_RANGE \
-                  | awk '$1=="A"{print $2}')
+                  | awk '$1=="A"{print $2}' || true)
 
           # Keep only CSVs under data/, skip already-flattened outputs
           ADDED=$(echo "$ADDED" | grep -E '^data/.*\.(csv|CSV)$' || true)
@@ -66,7 +68,7 @@ jobs:
           echo "added_files<<EOF" >> "$GITHUB_OUTPUT"
           echo "$ADDED" >> "$GITHUB_OUTPUT"
           echo "EOF" >> "$GITHUB_OUTPUT"
-          echo "Will process:"
+          echo "New CSVs to process:"
           echo "$ADDED"
 
       - name: Run flatten on each new file
@@ -78,7 +80,15 @@ jobs:
             [ -z "$f" ] && continue
             out="${f%.*}__flattened.csv"
             echo "Flattening: $f -> $out"
-            python "$SCRIPT_PATH" --input "$f" --output "$out"
+            # Try common calling styles so it works with your script
+            if python "$SCRIPT_PATH" --input "$f" --output "$out"; then
+              :
+            elif python "$SCRIPT_PATH" "$f" "$out"; then
+              :
+            else
+              echo "::error::Failed to run $SCRIPT_PATH with supported arguments."
+              exit 1
+            fi
           done <<< "${{ steps.find_added.outputs.added_files }}"
 
       - name: Commit results

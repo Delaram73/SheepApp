@@ -57,13 +57,30 @@ jobs:
 
       - name: Run converter
         env:
-          DATA_DIR: ${{ github.workspace }}/data   # optional override
+          DATA_DIR: ${{ github.workspace }}/data
         run: |
           set -euo pipefail
-          echo "Running: Rscript '${{ steps.find_script.outputs.script }}'"
-          Rscript "${{ steps.find_script.outputs.script }}"
+          mkdir -p data
+          export JOBS="$(nproc || echo 1)"
+          export OMP_NUM_THREADS="$JOBS"
+          export MKL_NUM_THREADS="$JOBS"
+          export OPENBLAS_NUM_THREADS="$JOBS"
+          echo "Using $JOBS parallel jobs"
+
+          # Pre-define `jobs` inside R, then source your script
+          Rscript - <<'RSCRIPT'
+          jobs <- as.integer(Sys.getenv("JOBS", "1"))
+          if (is.na(jobs) || jobs < 1) jobs <- 1
+          options(mc.cores = jobs)
+          if (requireNamespace("data.table", quietly = TRUE)) {
+            try(data.table::setDTthreads(jobs), silent = TRUE)
+          }
+          source("${{ steps.find_script.outputs.script }}")
+          RSCRIPT
+
           echo "--- data directory listing ---"
           ls -lh data || true
+
 
       - name: Upload converted CSVs (artifact)
         if: always()

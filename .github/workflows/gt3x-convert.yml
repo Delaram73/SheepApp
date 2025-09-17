@@ -19,6 +19,14 @@ jobs:
         with:
           lfs: true           # fetch real LFS content, not pointers
           fetch-depth: 0
+      - name: Download GT3X test data
+        run: |
+          mkdir -p data
+          curl -fL "$GT3X_URL" -o data/Pecora3.gt3x
+          echo "$GT3X_SHA  data/Pecora3.gt3x" | sha256sum -c -
+        env:
+          GT3X_URL: ${{ secrets.GT3X_URL }}
+          GT3X_SHA: ${{ secrets.GT3X_SHA }}
 
       - name: Verify & pull GT3X via LFS
         shell: bash

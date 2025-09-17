@@ -3,10 +3,18 @@ name: GT3X → CSV Converter
 on:
   push:
     paths:
+      - '**/convert_gt3x_to_csv.R'
       - 'pipeline/**'
-      - '.github/workflows/gt3x-convert.yml'
+      - 'scripts/**'
       - 'data/**'
+      - '.github/workflows/gt3x-convert.yml'
   pull_request:
+    paths:
+      - '**/convert_gt3x_to_csv.R'
+      - 'pipeline/**'
+      - 'scripts/**'
+      - 'data/**'
+      - '.github/workflows/gt3x-convert.yml'
 
 jobs:
   run:
@@ -25,12 +33,28 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends unzip
 
+      - name: Locate converter script
+        id: find_script
+        shell: bash
+        run: |
+          set -euo pipefail
+          script_path="$(git ls-files | grep -E '(^|/)convert_gt3x_to_csv\.R$' | head -n1 || true)"
+          if [[ -z "${script_path}" ]]; then
+            echo "❌ Could not find convert_gt3x_to_csv.R anywhere in the repo."
+            echo "Make sure the file is committed and pushed."
+            exit 1
+          fi
+          echo "Found script at: ${script_path}"
+          echo "script=${script_path}" >> "$GITHUB_OUTPUT"
+
       - name: Run converter
         env:
           # optional: override data dir; by default your script finds ./data
           DATA_DIR: ${{ github.workspace }}/data
         run: |
-          Rscript pipeline/convert_gt3x_to_csv.R
+          set -euo pipefail
+          echo "Running: Rscript '${{ steps.find_script.outputs.script }}'"
+          Rscript "${{ steps.find_script.outputs.script }}"
           echo "--- data directory listing ---"
           ls -lh data || true
 

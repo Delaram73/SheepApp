@@ -1,0 +1,171 @@
+name: Auto-flatten Drive data
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  flatten:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-latest
+    env:
+      SCRIPT_PATH: data/flatten.py
+
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify script path
+        run: |
+          echo "Repo at: $(pwd)"
+          ls -la
+          if [ ! -f "$SCRIPT_PATH" ]; then
+            echo "::error::Could not find $SCRIPT_PATH"; exit 1
+          fi
+          echo "Found $SCRIPT_PATH"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Python deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas numpy || true
+
+      - name: Install rclone
+        run: |
+          curl -s https://rclone.org/install.sh | sudo bash
+          rclone version
+
+      - name: Configure rclone (from secret)
+        run: |
+          printf "%s\n" "${{ secrets.RCLONE_CONF }}" > rclone.conf
+
+      # 🔐 Check auth to Drive (will fail loudly if token is wrong)
+      - name: Check Drive access
+        run: |
+          rclone --config rclone.conf about gd: -vv
+
+      # 🔎 List CSVs in the Drive folder (non-recursive and recursive)
+      - name: List CSVs in Drive (before)
+        env:
+          DRIVE_FOLDER_ID: ${{ secrets.DRIVE_FOLDER_ID }}
+        run: |
+          set -euo pipefail
+          echo "Folder ID: $DRIVE_FOLDER_ID"
+          echo "Non-recursive listing (top-level only):"
+          rclone --config rclone.conf lsf gd: \
+            --drive-root-folder-id "$DRIVE_FOLDER_ID" \
+            --include "*.csv" --include "*.CSV" \
+            --max-depth 1 -vv
+          echo "Recursive listing (all subfolders):"
+          rclone --config rclone.conf lsf gd: \
+            --drive-root-folder-id "$DRIVE_FOLDER_ID" \
+            --include "*.csv" --include "*.CSV" \
+            --recursive -vv
+          echo "JSON listing (first 200 chars):"
+          rclone --config rclone.conf lsjson gd: \
+            --drive-root-folder-id "$DRIVE_FOLDER_ID" \
+            --include "*.csv" --include "*.CSV" \
+            --recursive | head -c 200 || true; echo
+
+      - name: Pull CSVs from Google Drive (include subfolders)
+        env:
+          DRIVE_FOLDER_ID: ${{ secrets.DRIVE_FOLDER_ID }}
+        run: |
+          set -euo pipefail
+          mkdir -p data
+          # Copy both .csv and .CSV, from folder and all subfolders
+          rclone --config rclone.conf copy \
+            gd: ./data \
+            --drive-root-folder-id "$DRIVE_FOLDER_ID" \
+            --include "*.csv" --include "*.CSV" \
+            --exclude "*__flattened.csv" \
+            --recursive -vv
+          echo "Local ./data contents:"
+          find data -maxdepth 2 -type f -printf "%p (%s bytes)\n" || true
+
+      # ✅ Prove we can actually read the downloaded files
+      - name: Preview & validate CSVs
+        id: preview
+        run: |
+          set -euo pipefail
+          TO_PROCESS=""
+          shopt -s nullglob
+          for f in data/**/*.csv data/**/*.CSV data/*.csv data/*.CSV; do
+            [[ "$f" =~ __flattened\.csv$ ]] && continue
+            echo "🔎 Found CSV: $(basename "$f") (size=$(stat -c%s "$f") bytes)"
+            echo "First 2 lines of $(basename "$f"):"
+            head -n 2 "$f" || true
+            # Try reading a few rows with pandas
+            FILE="$f" python - <<'PY'
+import os, pandas as pd
+f = os.environ["FILE"]
+try:
+  df = pd.read_csv(f, nrows=5)
+  print("✅ Read OK:", os.path.basename(f), "| columns:", list(df.columns))
+except Exception as e:
+  print("❌ Read FAILED:", os.path.basename(f), "| error:", e)
+  raise
+PY
+            TO_PROCESS+="$f"$'\n'
+          done
+          printf "to_process<<EOF\n%s\nEOF\n" "$TO_PROCESS" >> "$GITHUB_OUTPUT"
+          if [ -z "$TO_PROCESS" ]; then
+            echo "::warning::No CSVs found to process after copy. Check folder ID, extension, or permissions."
+          fi
+
+      - name: Run flatten on each CSV
+        if: ${{ steps.preview.outputs.to_process != '' }}
+        run: |
+          set -euo pipefail
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            out="${f%.*}__flattened.csv"
+            echo "Flattening: $(basename "$f") -> $(basename "$out")"
+            if python "$SCRIPT_PATH" --input "$f" --output "$out"; then
+              :
+            elif python "$SCRIPT_PATH" "$f" "$out"; then
+              :
+            else
+              echo "::error::Failed to run $SCRIPT_PATH with supported arguments."
+              exit 1
+            fi
+          done <<< "${{ steps.preview.outputs.to_process }}"
+
+      - name: Upload flattened files back to Google Drive
+        if: ${{ steps.preview.outputs.to_process != '' }}
+        env:
+          IN_ID: ${{ secrets.DRIVE_FOLDER_ID }}
+          OUT_ID: ${{ secrets.DRIVE_OUTPUT_FOLDER_ID }}
+        run: |
+          set -euo pipefail
+          DEST_ID="${OUT_ID:-$IN_ID}"
+          echo "Uploading *__flattened.csv to Drive folder ID: $DEST_ID"
+          rclone --config rclone.conf copy ./data gd: \
+            --drive-root-folder-id "$DEST_ID" \
+            --include "*__flattened.csv" \
+            --recursive -vv
+          echo "Upload complete."
+
+      - name: List flattened CSVs in Drive (after)
+        if: ${{ steps.preview.outputs.to_process != '' }}
+        env:
+          IN_ID: ${{ secrets.DRIVE_FOLDER_ID }}
+          OUT_ID: ${{ secrets.DRIVE_OUTPUT_FOLDER_ID }}
+        run: |
+          DEST_ID="${OUT_ID:-$IN_ID}"
+          echo "Flattened files in Drive folder $DEST_ID:"
+          rclone --config rclone.conf lsf gd: \
+            --drive-root-folder-id "$DEST_ID" \
+            --include "*__flattened.csv" \
+            --recursive -vv

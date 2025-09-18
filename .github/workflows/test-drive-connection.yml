@@ -1,0 +1,71 @@
+name: Test Google Drive connectivity
+on:
+  workflow_dispatch:
+
+jobs:
+  test-drive:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install rclone
+        run: |
+          curl -s https://rclone.org/install.sh | sudo bash
+          rclone version
+
+      - name: Configure rclone (from secret)
+        run: |
+          printf "%s\n" "${{ secrets.RCLONE_CONF }}" > rclone.conf
+
+      - name: Check Drive auth
+        run: |
+          # Prints Drive quota info if the token is valid
+          rclone --config rclone.conf about gd: -vv
+
+      - name: List CSVs in target folder (top-level)
+        env:
+          FOLDER_ID: ${{ secrets.DRIVE_FOLDER_ID }}
+        run: |
+          echo "Listing CSVs in folder ID: $FOLDER_ID"
+          rclone --config rclone.conf lsf gd: \
+            --drive-root-folder-id "$FOLDER_ID" \
+            --include "*.csv" --include "*.CSV" \
+            --max-depth 1 -vv || true
+
+      - name: List CSVs in target folder (recursive)
+        env:
+          FOLDER_ID: ${{ secrets.DRIVE_FOLDER_ID }}
+        run: |
+          rclone --config rclone.conf lsf gd: \
+            --drive-root-folder-id "$FOLDER_ID" \
+            --include "*.csv" --include "*.CSV" \
+            --recursive -vv || true
+
+      - name: Upload a tiny test file (write check)
+        env:
+          IN_ID:  ${{ secrets.DRIVE_FOLDER_ID }}
+          OUT_ID: ${{ secrets.DRIVE_OUTPUT_FOLDER_ID }}
+        run: |
+          set -euo pipefail
+          DEST_ID="${OUT_ID:-$IN_ID}"
+          TEST="connectivity_check_$(date +%s).txt"
+          echo "Hello from GitHub Actions ✅" > "$TEST"
+          echo "Uploading $TEST to folder $DEST_ID ..."
+          rclone --config rclone.conf copy "$TEST" gd: \
+            --drive-root-folder-id "$DEST_ID" -vv
+          echo "Verifying upload:"
+          rclone --config rclone.conf lsf gd: \
+            --drive-root-folder-id "$DEST_ID" \
+            --include "$TEST" --max-depth 1 -vv
+
+      # Optional: delete the test file afterwards
+      - name: Clean up test file (optional)
+        if: always()
+        env:
+          IN_ID:  ${{ secrets.DRIVE_FOLDER_ID }}
+          OUT_ID: ${{ secrets.DRIVE_OUTPUT_FOLDER_ID }}
+        run: |
+          DEST_ID="${OUT_ID:-$IN_ID}"
+          TEST_PREFIX="connectivity_check_"
+          echo "Deleting files starting with $TEST_PREFIX in $DEST_ID ..."
+          rclone --config rclone.conf delete gd: \
+            --drive-root-folder-id "$DEST_ID" \
+            --include "${TEST_PREFIX}*.txt" -vv || true
